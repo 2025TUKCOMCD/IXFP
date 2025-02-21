@@ -29,3 +29,4 @@ https://heeya-stupidbutstudying.tistory.com/entry/DL-Swin-Transformer-%EB%85%BC%
 
 https://puleugo.tistory.com/5
 > 모바일에서도 연동 가능한 그물망 인식
+.

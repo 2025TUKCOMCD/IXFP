@@ -7,7 +7,7 @@ import cv2
 from datetime import datetime
 
 def HaarCam():
-    haar_classifier = cv2.CascadeClassifier("opencv-4.x/data/haarcascades/haarcascade_frontalface_default.xml")
+    haar_classifier = cv2.CascadeClassifier("D:/github_local/JZP/AI/opencv-4.x/data/haarcascades/haarcascade_frontalface_default.xml")
 
     capture = cv2.VideoCapture(0)
     capture.set(cv2.CAP_PROP_FRAME_WIDTH,1280)
@@ -44,7 +44,7 @@ def HaarCam():
             for (x,y,w,h) in faces:
                 now = datetime.now()
                 current_time_str=now.strftime("%Y-%m-%d_(%H-%M-%S)")
-                cv2.imwrite("capture_data/"+current_time_str+'_'+str(count/60+1)+".jpg",frame_origin[y-50:y+h+50, x-25:x+w+25])
+                cv2.imwrite("D:/github_local/JZP/AI/capture_data/"+current_time_str+'_'+str(count/60+1)+".jpg",frame_origin[y-50:y+h+50, x-25:x+w+25])
                 cv2.rectangle(frame,(x,y),(x+w,y+h),(255,0,0),2) # rectangle(image, start_point, end_point, color, thickness)
                 count += 1
                 detection=1
@@ -54,7 +54,7 @@ def HaarCam():
             if count%15==0:
                 now = datetime.now()
                 current_time_str=now.strftime("%Y-%m-%d_(%H-%M-%S)")
-                cv2.imwrite("capture_data/"+current_time_str+'_'+str(count/60+1)+".jpg",frame_origin[y-50:y+h+50, x-25:x+w+25])
+                cv2.imwrite("D:/github_local/JZP/AI/capture_data/"+current_time_str+'_'+str(count/60+1)+".jpg",frame_origin[y-50:y+h+50, x-25:x+w+25])
             cv2.rectangle(frame,(x,y),(x+w,y+h),(255,0,0),2)
         
         cv2.imshow('image',frame)
@@ -65,7 +65,7 @@ def HaarCam():
     # 로직 문제로 사진 자체에 rectangle이 200장 중 하나 꼴로 포함된다.
     #
 
-    print("\n [INFO] Exiting Program and cleanup stuff\n")
+    print("\n Exiting Program and cleanup ...\n")
 
     capture.release() # release memory
     cv2.destroyAllWindows() #destroy windows
