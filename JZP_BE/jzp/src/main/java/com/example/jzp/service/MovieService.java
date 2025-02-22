@@ -2,14 +2,29 @@ package com.example.jzp.service;
 
 import com.example.jzp.model.Movie;
 import com.example.jzp.controller.MovieController;
+import com.example.jzp.model.TMDB;
 import com.example.jzp.repository.MovieRepository;
 import com.example.jzp.repository.TicketRepository;
+import com.example.jzp.repository.TMDBRepository;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import com.example.jzp.model.Ticket;
+import org.springframework.web.client.RestTemplate;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import java.time.LocalTime;
+import java.time.LocalDate;
 import java.util.*;
 import java.util.stream.Collectors;
+import java.time.format.DateTimeFormatter;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Random;
 
 
 @Service
@@ -23,12 +38,20 @@ public class MovieService {
     private TicketRepository ticketRepository;
 
     @Autowired
+    private TMDBRepository tmdbRepository;
+
+    private static final String[] THEATER_NAMES = {"1관", "2관", "3관", "4관"};
+    private static final Random RANDOM = new Random();
+
+    @Autowired
     private TicketService ticketService; // TicketService 사용
 
     private static final int YOUTH_TICKET_PRICE = 10000;  // 청소년 가격
     private static final int ADULT_TICKET_PRICE = 15000;  // 성인 가격
     private static final int OLD_TICKET_PRICE = 8000;    // 노인 가격
     private static final int DISABLED_TICKET_PRICE = 5000; // 장애인 가격
+    private final String API_KEY = "23da313eaaed21538b2ebab1161a0981";
+    private static final String BASE_URL = "https://api.themoviedb.org/3/movie/popular";
 
     public MovieService(TicketRepository ticketRepository) {
         this.ticketRepository = ticketRepository;
@@ -43,6 +66,198 @@ public class MovieService {
                 .distinct()  // 중복된 영화가 있을 경우 제거
                 .collect(Collectors.toList());
     }
+
+    // 장르 목록을 가져와서 Map에 저장
+    public Map<Integer, String> getGenreMap() {
+        String url = "https://api.themoviedb.org/3/genre/movie/list?api_key=" + API_KEY + "&language=ko-KR";
+        RestTemplate restTemplate = new RestTemplate();
+        String response = restTemplate.getForObject(url, String.class);
+
+        Map<Integer, String> genreMap = new HashMap<>();
+
+        try {
+            ObjectMapper objectMapper = new ObjectMapper();
+            JsonNode rootNode = objectMapper.readTree(response);
+            JsonNode genresNode = rootNode.path("genres");
+
+            for (JsonNode genreNode : genresNode) {
+                int id = genreNode.path("id").asInt();
+                String name = genreNode.path("name").asText();
+                genreMap.put(id, name);
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+
+        return genreMap;
+    }
+
+    // 영화 정보에서 장르 이름을 추출하는 메서드
+    public List<String> extractGenres(JsonNode movieNode, Map<Integer, String> genreMap) {
+        List<String> genres = new ArrayList<>();
+        JsonNode genresNode = movieNode.path("genre_ids");
+
+        for (JsonNode genreNode : genresNode) {
+            int genreId = genreNode.asInt();  // 장르 ID
+            String genreName = genreMap.get(genreId);  // 장르 이름 변환
+            if (genreName != null) {
+                genres.add(genreName);  // 리스트에 추가
+            }
+        }
+
+        return genres;
+    }
+
+@Transactional
+    public void saveMoviesFromTMDB() {
+        // 1. TMDB API에서 영화 데이터 가져오기
+        Map<Integer, String> genreMap = getGenreMap();
+        String url = "https://api.themoviedb.org/3/movie/popular?api_key=" + API_KEY + "&language=ko-KR&page=1";
+        RestTemplate restTemplate = new RestTemplate();
+        String response = restTemplate.getForObject(url, String.class);
+
+        try {
+            ObjectMapper objectMapper = new ObjectMapper();
+            JsonNode rootNode = objectMapper.readTree(response);
+            JsonNode resultsNode = rootNode.path("results");
+
+            int rating = 1;
+            for (JsonNode movieNode : resultsNode) {
+                Long tmdbMovieId = movieNode.path("id").asLong();
+                String title = movieNode.path("title").asText();
+                String posterPath = movieNode.path("poster_path").asText();
+                List<String> genres = extractGenres(movieNode, genreMap);
+                boolean adult = movieNode.path("adult").asBoolean();
+
+                // 나이 등급 처리
+                String ageRating = getAgeRatingFromAdultAndGenres(adult, genres);
+
+                Integer ranking = rating++;
+
+                // TMDB 엔티티 생성
+                TMDB tmdb = new TMDB();
+                tmdb.setTmdbMovieId(tmdbMovieId);
+                tmdb.setTitle(title);
+                tmdb.setPosterPath(posterPath);
+                tmdb.setRanking(ranking);
+                tmdb.setAgeRating(ageRating);
+                tmdb.setGenres(genres);
+
+                // TMDB DB에 저장
+                tmdbRepository.save(tmdb);
+            }
+
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+
+    // 성인 여부와 장르를 기반으로 나이 등급을 결정하는 메서드
+    private String getAgeRatingFromAdultAndGenres(boolean adult, List<String> genres) {
+        // 성인 여부가 true이면 19세 미만 관람 불가
+        if (adult) {
+            return "19세 미만 관람 불가";
+        }
+
+        // 15세 이상 나이 등급을 결정할 장르들
+        List<String> ageRestrictedGenres15 = List.of("로맨스", "스릴러", "공포", "범죄", "미스터리", "전쟁");
+
+        // 15세 이상 장르가 있으면 15세 이상으로 설정
+        for (String genre : genres) {
+            if (ageRestrictedGenres15.contains(genre)) {
+                return "15세 이상";
+            }
+        }
+
+        // 해당 장르가 없으면 전체이용가로 설정
+        return "전체이용가";
+    }
+
+
+    @Transactional(isolation = Isolation.SERIALIZABLE)
+    public void saveMovie() {
+        Logger logger = LoggerFactory.getLogger(MovieService.class);
+
+        try {
+            List<TMDB> tmdbMovies = tmdbRepository.findAll();  // TMDB 테이블의 모든 영화 가져오기
+
+            if (tmdbMovies.isEmpty()) {
+                throw new RuntimeException("저장된 TMDB 영화 정보가 없습니다.");
+            }
+
+            int ranking = 1;
+            // 영화에 대한 시간 생성 (08:20 ~ 23:55)
+            List<LocalTime> randomTimes = generateRandomTimes();
+
+            // 현재 날짜 기준으로 4일 뒤까지 저장
+            LocalDate today = LocalDate.now();
+
+            for (TMDB tmdb : tmdbMovies) {
+                for (int i = 0; i < 5; i++) {  // 오늘부터 4일 뒤까지 5일 분량 저장
+                    LocalDate movieDate = today.plusDays(i);
+
+                    for (LocalTime time : randomTimes) {
+                        Movie movie = new Movie();
+                        movie.setMovieId(UUID.randomUUID());
+                        movie.setTmdbMovieId(tmdb.getTmdbMovieId());
+                        movie.setMovieName(tmdb.getTitle());
+                        movie.setMovieCalendar(java.sql.Date.valueOf(movieDate));
+                        movie.setMovieTime(time);
+                        movie.setMovieImage("https://image.tmdb.org/t/p/w500" + tmdb.getPosterPath());
+                        movie.setMovieType(String.join(", ", tmdb.getGenres()));
+                        movie.setMovieGrade(tmdb.getAgeRating());
+                        movie.setMovieRating(tmdb.getRanking());
+                        movie.setMovieSeatRemain(72);
+                        movie.setMovieTheater(THEATER_NAMES[RANDOM.nextInt(THEATER_NAMES.length)]);
+
+                        // Movie 테이블에 저장
+                        try {
+                            movieRepository.save(movie);
+                        } catch (ObjectOptimisticLockingFailureException ole) {
+                            logger.error("영화 저장 중 낙관적 락 예외 발생: {}", ole.getMessage());
+                            // 낙관적 락 예외 발생 시 처리 로직 추가 (예: 재시도, 알림 등)
+                            throw new RuntimeException("동시성 문제로 인해 영화 저장 실패: " + ole.getMessage());
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            // 예외를 기록하고 리스폰스에 포함시켜 더 구체적인 문제를 확인할 수 있습니다.
+            logger.error("영화 저장 중 오류 발생: {}", e.getMessage(), e);  // 로그 출력
+            throw new RuntimeException("영화 저장 중 오류 발생: " + e.getMessage());
+        }
+    }
+
+
+    private List<LocalTime> generateRandomTimes() {
+        LocalTime start = LocalTime.parse("08:20", DateTimeFormatter.ofPattern("HH:mm"));
+        LocalTime end = LocalTime.parse("23:55", DateTimeFormatter.ofPattern("HH:mm"));
+
+        // 5분 단위로 시간 간격을 계산
+        int startMinutes = start.getHour() * 60 + start.getMinute();
+        int endMinutes = end.getHour() * 60 + end.getMinute();
+
+        // 5분 단위로 나눈 값
+        int totalMinutes = endMinutes - startMinutes;
+        int totalIntervals = totalMinutes / 5;
+
+        // 랜덤 시간 4개 생성 (List 사용으로 유동성 확보)
+        Set<LocalTime> randomTimesSet = new HashSet<>();  // 중복을 방지하기 위해 Set 사용
+        while (randomTimesSet.size() < 4) {
+            // 5분 단위로 랜덤한 오프셋 선택
+            int randomOffset = RANDOM.nextInt(totalIntervals + 1) * 5; // 5분 단위로 간격을 계산
+            LocalTime randomTime = start.plusMinutes(randomOffset);
+            randomTimesSet.add(randomTime);  // Set에 추가 (중복 제거)
+        }
+
+        // 시간 순서대로 정렬
+        List<LocalTime> randomTimes = new ArrayList<>(randomTimesSet);
+        randomTimes.sort(Comparator.naturalOrder());  // 정렬
+
+        return randomTimes;
+    }
+
 
 
     // 날짜별 영화 조회
@@ -300,4 +515,5 @@ public class MovieService {
 
         return response;
     }
+
 }
