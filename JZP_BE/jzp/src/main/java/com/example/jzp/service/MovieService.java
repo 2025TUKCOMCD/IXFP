@@ -4,12 +4,23 @@ import com.example.jzp.model.Movie;
 import com.example.jzp.controller.MovieController;
 import com.example.jzp.repository.MovieRepository;
 import com.example.jzp.repository.TicketRepository;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.transaction.annotation.Isolation;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import com.example.jzp.model.Ticket;
+import org.springframework.web.client.RestTemplate;
+
+import java.time.LocalDate;
 import java.time.LocalTime;
 import java.util.*;
 import java.util.stream.Collectors;
+import java.time.format.DateTimeFormatter;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Random;
 
 
 @Service
@@ -22,6 +33,9 @@ public class MovieService {
     @Autowired
     private TicketRepository ticketRepository;
 
+    private static final String[] THEATER_NAMES = {"1관", "2관", "3관", "4관"};
+    private static final Random RANDOM = new Random();
+
     @Autowired
     private TicketService ticketService; // TicketService 사용
 
@@ -29,9 +43,12 @@ public class MovieService {
     private static final int ADULT_TICKET_PRICE = 15000;  // 성인 가격
     private static final int OLD_TICKET_PRICE = 8000;    // 노인 가격
     private static final int DISABLED_TICKET_PRICE = 5000; // 장애인 가격
+    private final String API_KEY = "23da313eaaed21538b2ebab1161a0981";
+    private static final String BASE_URL = "https://api.themoviedb.org/3/movie/popular";
 
-    public MovieService(TicketRepository ticketRepository) {
-        this.ticketRepository = ticketRepository;
+    @Autowired
+    public MovieService( MovieRepository movieRepository) {
+        this.movieRepository = movieRepository;
     }
 
     public List<Movie> getMoviesByTime(Date movieCalendar, LocalTime movieTime) {
@@ -42,6 +59,161 @@ public class MovieService {
                 .map(Ticket::getMovie)  // Ticket에서 Movie를 추출
                 .distinct()  // 중복된 영화가 있을 경우 제거
                 .collect(Collectors.toList());
+    }
+
+    // 장르 목록을 가져와서 Map에 저장
+    public Map<Integer, String> getGenreMap() {
+        String url = "https://api.themoviedb.org/3/genre/movie/list?api_key=" + API_KEY + "&language=ko-KR";
+        RestTemplate restTemplate = new RestTemplate();
+        String response = restTemplate.getForObject(url, String.class);
+
+        Map<Integer, String> genreMap = new HashMap<>();
+
+        try {
+            ObjectMapper objectMapper = new ObjectMapper();
+            JsonNode rootNode = objectMapper.readTree(response);
+            JsonNode genresNode = rootNode.path("genres");
+
+            for (JsonNode genreNode : genresNode) {
+                int id = genreNode.path("id").asInt();
+                String name = genreNode.path("name").asText();
+                genreMap.put(id, name);
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+
+        return genreMap;
+    }
+
+    // 영화 정보에서 장르 이름을 추출하는 메서드
+    public List<String> extractGenres(JsonNode movieNode, Map<Integer, String> genreMap) {
+        List<String> genres = new ArrayList<>();
+        JsonNode genresNode = movieNode.path("genre_ids");
+
+        for (JsonNode genreNode : genresNode) {
+            int genreId = genreNode.asInt();  // 장르 ID
+            String genreName = genreMap.get(genreId);  // 장르 이름 변환
+            if (genreName != null) {
+                genres.add(genreName);  // 리스트에 추가
+            }
+        }
+
+        return genres;
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public void saveMoviesFromTMDB() {
+        // TMDB API에서 영화 데이터 가져오기
+        Map<Integer, String> genreMap = getGenreMap();
+        String url = "https://api.themoviedb.org/3/movie/popular?api_key=" + API_KEY + "&language=ko-KR&page=1";
+        RestTemplate restTemplate = new RestTemplate();
+        String response = restTemplate.getForObject(url, String.class);
+
+        try {
+            ObjectMapper objectMapper = new ObjectMapper();
+            JsonNode rootNode = objectMapper.readTree(response);
+            JsonNode resultsNode = rootNode.path("results");
+
+            int rating = 1;
+            LocalDate today = LocalDate.now();  // 오늘 날짜 기준
+
+            // 각 TMDB 영화 데이터 처리
+            for (JsonNode movieNode : resultsNode) {
+                Long tmdbMovieId = movieNode.path("id").asLong();
+                String title = movieNode.path("title").asText();
+                String posterPath = movieNode.path("poster_path").asText();
+                List<String> genres = extractGenres(movieNode, genreMap);
+                boolean adult = movieNode.path("adult").asBoolean();
+
+                // 성인 여부와 장르를 기반으로 나이 등급을 결정
+                String ageRating = getAgeRatingFromAdultAndGenres(adult, genres);
+
+                Integer ranking = rating++;
+
+                // 랜덤 시간 생성
+                List<LocalTime> randomTimes = generateRandomTimes();  // 영화마다 랜덤 시간 생성
+
+
+                for (int i = 0; i < 5; i++) {
+                    LocalDate movieDate = today.plusDays(i);
+
+                    // 각 상영 시간마다 새로운 Movie 객체 생성
+                    for (LocalTime time : randomTimes) {
+                        Movie movie = new Movie();  // 상영 시간마다 새로운 Movie 객체 생성
+                        movie.setMovieId(UUID.randomUUID());  // 고유한 movie_id 생성
+                        movie.setTmdbMovieId(tmdbMovieId);  // tmdbMovieId는 중복 가능
+                        movie.setMovieName(title);
+                        movie.setMovieImage("https://image.tmdb.org/t/p/w500" + posterPath);
+                        movie.setMovieType(String.join(", ", genres));
+                        movie.setMovieGrade(ageRating);
+                        movie.setMovieRating(ranking);
+                        movie.setMovieTime(time);  // 랜덤 시간 할당
+                        movie.setMovieCalendar(java.sql.Date.valueOf(movieDate));  // 영화 상영일 설정
+                        movie.setMovieSeatRemain(72);  // 영화의 좌석 수
+                        movie.setMovieTheater(THEATER_NAMES[RANDOM.nextInt(THEATER_NAMES.length)]);  // 랜덤 영화관
+
+                        // Movie DB에 저장
+                        movieRepository.save(movie);
+                    }
+                }
+            }
+
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+
+
+    private List<LocalTime> generateRandomTimes() {
+        LocalTime start = LocalTime.parse("08:20", DateTimeFormatter.ofPattern("HH:mm"));
+        LocalTime end = LocalTime.parse("23:55", DateTimeFormatter.ofPattern("HH:mm"));
+
+
+        int startMinutes = start.getHour() * 60 + start.getMinute();
+        int endMinutes = end.getHour() * 60 + end.getMinute();
+
+
+        int totalMinutes = endMinutes - startMinutes;
+        int totalIntervals = totalMinutes / 5;
+
+
+        Set<LocalTime> randomTimesSet = new HashSet<>();
+        while (randomTimesSet.size() < 4) {
+
+            int randomOffset = RANDOM.nextInt(totalIntervals + 1) * 5;
+            LocalTime randomTime = start.plusMinutes(randomOffset);
+            randomTimesSet.add(randomTime);
+        }
+
+        List<LocalTime> randomTimes = new ArrayList<>(randomTimesSet);
+        randomTimes.sort(Comparator.naturalOrder());
+
+        return randomTimes;
+    }
+
+
+
+    // 나이 등급을 결정하는 메서드
+    private String getAgeRatingFromAdultAndGenres(boolean adult, List<String> genres) {
+        // 성인 여부가 true이면 19세 미만 관람 불가
+        if (adult) {
+            return "19세 미만 관람 불가";
+        }
+
+        // 15세 이상 나이 등급을 결정할 장르들
+        List<String> ageRestrictedGenres15 = List.of("로맨스", "스릴러", "공포", "범죄", "미스터리", "전쟁");
+
+        // 15세 이상 장르가 있으면 15세 이상으로 설정
+        for (String genre : genres) {
+            if (ageRestrictedGenres15.contains(genre)) {
+                return "15세 이상";
+            }
+        }
+
+        // 해당 장르가 없으면 전체이용가로 설정
+        return "전체이용가";
     }
 
 
@@ -300,4 +472,5 @@ public class MovieService {
 
         return response;
     }
+
 }

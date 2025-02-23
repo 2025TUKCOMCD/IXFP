@@ -11,26 +11,32 @@ import java.util.UUID;
 public class Movie {
 
     @Id
-    @GeneratedValue
     private UUID movieId;
-
     private String movieName;
+    private Long tmdbMovieId;
+
 
     @Temporal(TemporalType.DATE)
     private Date movieCalendar;
 
     @JsonFormat(pattern = "HH:mm:ss")
     private LocalTime movieTime;
-
     private String movieTheater;
     private String movieImage;
     private String movieType;
-
     private int movieRating;
     private String movieGrade;
     private int movieSeatRemain;
     @Column
     private String movieSeat;
+
+    public Long getTmdbMovieId() {
+        return tmdbMovieId;
+    }
+
+    public void setTmdbMovieId(Long tmdbMovieId) {
+        this.tmdbMovieId = tmdbMovieId;
+    }
     public UUID getMovieId() {
         return movieId;
     }

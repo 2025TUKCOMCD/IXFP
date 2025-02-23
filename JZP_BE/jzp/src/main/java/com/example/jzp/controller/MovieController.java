@@ -24,6 +24,12 @@ public class MovieController {
     @Autowired
     private TicketService ticketService;
 
+    @GetMapping("/save-tmdb")
+    public String saveMovies() {
+        movieService.saveMoviesFromTMDB(); // TMDB에서 영화 데이터를 가져오고 저장
+        return "Movies saved successfully!";
+    }
+
     // 영화 그룹별 요청
     @PostMapping("/showmovie/{group}")
     public ResponseEntity<?> showMovieByGroup(@PathVariable("group") String group,
